@@ -98,6 +98,32 @@ function M.rename(node, to)
   end
 end
 
+---@param path string
+---@return boolean
+local function is_absolute_path(path)
+  if vim.fn.has("win32") == 1 then
+    -- Windows: C:\foo, C:/foo, \\server\share
+    return path:match("^%a:[/\\]") ~= nil or path:match("^[/\\][/\\]") ~= nil
+  end
+
+  -- Unix: /foo
+  return path:sub(1, 1) == "/"
+end
+
+---@param base_dir string
+---@param input_path string
+---@param append string
+---@return string
+local function resolve_rename_path(base_dir, input_path, append)
+  local target = input_path .. append
+
+  if is_absolute_path(input_path) then
+    return vim.fs.normalize(target)
+  end
+
+  return vim.fs.normalize(utils.path_join({ base_dir, target }))
+end
+
 ---@param node Node
 ---@param modifier? string
 local function prompt_to_rename(node, modifier)
@@ -120,7 +146,7 @@ local function prompt_to_rename(node, modifier)
 
   -- support for only specific modifiers have been implemented
   if not ALLOWED_MODIFIERS[modifier] then
-    notify.warn("Modifier " .. vim.inspect(modifier) .. " is not in allowed list : " .. table.concat(ALLOWED_MODIFIERS, ","))
+    notify.warn("Modifier " .. vim.inspect(modifier) .. " is not in allowed list : " .. vim.inspect(ALLOWED_MODIFIERS))
     return
   end
 
@@ -128,6 +154,7 @@ local function prompt_to_rename(node, modifier)
   if dir then
     node = dir:last_group_node()
   end
+
   if node.name == ".." then
     return
   end
@@ -137,14 +164,18 @@ local function prompt_to_rename(node, modifier)
   local default_path
   local prepend = ""
   local append = ""
+
   default_path = vim.fn.fnamemodify(node.absolute_path, modifier)
+
   if modifier:sub(0, 2) == ":t" then
     prepend = directory
   end
+
   if modifier == ":t:r" then
     local extension = vim.fn.fnamemodify(node.name, ":e")
     append = extension:len() == 0 and "" or "." .. extension
   end
+
   if modifier == ":p:h" then
     default_path = default_path .. "/"
   end
@@ -157,13 +188,27 @@ local function prompt_to_rename(node, modifier)
 
   vim.ui.input(input_opts, function(new_file_path)
     utils.clear_prompt()
-    if not new_file_path then
+
+    if not new_file_path or new_file_path == "" then
       return
     end
 
-    local full_new_path = prepend .. new_file_path .. append
+    local full_new_path
+
+    if modifier:sub(0, 2) == ":t" then
+      -- For normal rename and basename rename:
+      --   foo       -> same directory
+      --   ../foo    -> parent directory
+      --   sub/foo   -> child directory
+      --   /tmp/foo  -> absolute destination
+      full_new_path = resolve_rename_path(prepend, new_file_path, append)
+    else
+      -- For full-path rename modes, preserve existing behavior.
+      full_new_path = new_file_path .. append
+    end
 
     M.rename(node, full_new_path)
+
     if not config.g.filesystem_watchers.enable then
       explorer:reload_explorer()
     end
